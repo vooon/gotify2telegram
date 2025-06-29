@@ -26,7 +26,7 @@ func GetGotifyPluginInfo() plugin.Info {
 }
 
 // Plugin is the plugin instance
-type Plugin struct {
+type TelegramPlugin struct {
 	ws                 *websocket.Conn
 	msgHandler         plugin.MessageHandler
 	debugLogger        *log.Logger
@@ -49,7 +49,7 @@ type Payload struct {
 	Text   string `json:"text"`
 }
 
-func (p *Plugin) send_msg_to_telegram(msg string) {
+func (p *TelegramPlugin) send_msg_to_telegram(msg string) {
 	step_size := 4090
 	sending_message := ""
 
@@ -111,7 +111,7 @@ func (p *Plugin) send_msg_to_telegram(msg string) {
 	}
 }
 
-func (p *Plugin) connect_websocket() {
+func (p *TelegramPlugin) connect_websocket() {
 	for {
 		ws, _, err := websocket.DefaultDialer.Dial(p.gotify_host, nil)
 		if err == nil {
@@ -124,7 +124,7 @@ func (p *Plugin) connect_websocket() {
 	p.debugLogger.Println("WebSocket connected successfully, ready for forwarding")
 }
 
-func (p *Plugin) get_websocket_msg(url string, token string) {
+func (p *TelegramPlugin) get_websocket_msg(url string, token string) {
 	p.gotify_host = url + "/stream?token=" + token
 	p.chatid = os.Getenv("TELEGRAM_CHAT_ID")
 	p.debugLogger.Printf("chatid: %v\n", p.chatid)
@@ -151,18 +151,18 @@ func (p *Plugin) get_websocket_msg(url string, token string) {
 
 // SetMessageHandler implements plugin.Messenger
 // Invoked during initialization
-func (p *Plugin) SetMessageHandler(h plugin.MessageHandler) {
+func (p *TelegramPlugin) SetMessageHandler(h plugin.MessageHandler) {
 	p.debugLogger = log.New(os.Stdout, "Gotify 2 Telegram: ", log.Lshortfile)
 	p.msgHandler = h
 }
 
-func (p *Plugin) Enable() error {
+func (p *TelegramPlugin) Enable() error {
 	go p.get_websocket_msg(os.Getenv("GOTIFY_HOST"), os.Getenv("GOTIFY_CLIENT_TOKEN"))
 	return nil
 }
 
 // Disable implements plugin.Plugin
-func (p *Plugin) Disable() error {
+func (p *TelegramPlugin) Disable() error {
 	if p.ws != nil {
 		p.ws.Close()
 	}
@@ -171,7 +171,7 @@ func (p *Plugin) Disable() error {
 
 // NewGotifyPluginInstance creates a plugin instance for a user context.
 func NewGotifyPluginInstance(ctx plugin.UserContext) plugin.Plugin {
-	return &Plugin{}
+	return &TelegramPlugin{}
 }
 
 func main() {
