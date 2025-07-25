@@ -45,7 +45,6 @@ type TelegramPlugin struct {
 	cancel     context.CancelFunc
 	lg         *slog.Logger
 	config     *TelegramConfig
-	msgC       chan GotifyMessage
 }
 
 type GotifyMessage struct {
@@ -64,6 +63,8 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 	// TODO: templating?
 	tmsg := fmt.Sprintf("Date: %s\nTitle: %s\n\n%s", msg.Date, msg.Title, msg.Message)
 	msgLen := len(tmsg)
+
+	// p.lg.Debug("forwarding...", "msg", msg)
 
 	bot, err := botapi.New(p.config.ClientToken)
 	if err != nil {
@@ -106,7 +107,7 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 	}
 }
 
-func (p *TelegramPlugin) connect(ctx context.Context) {
+func (p *TelegramPlugin) connect(ctx context.Context, msgC chan<- GotifyMessage) {
 	var ws *websocket.Conn
 
 	for {
@@ -122,7 +123,10 @@ func (p *TelegramPlugin) connect(ctx context.Context) {
 
 		p.lg.InfoContext(ctx, "Dialing message stream", "url", u.String())
 
-		ws, _, err = websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
+		ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		ws, _, err = websocket.DefaultDialer.DialContext(ctx2, u.String(), nil)
 		if err == nil {
 			break
 		}
@@ -133,14 +137,13 @@ func (p *TelegramPlugin) connect(ctx context.Context) {
 
 	p.lg.InfoContext(ctx, "Connected to message stream")
 
-	p.msgC = make(chan GotifyMessage, 100)
-
 	go func() {
 		for {
 			select {
 			case <-p.ctx.Done():
+				p.lg.WarnContext(p.ctx, "Terminating message reader")
 				_ = ws.Close()
-				close(p.msgC)
+				close(msgC)
 				return
 
 			default:
@@ -149,11 +152,12 @@ func (p *TelegramPlugin) connect(ctx context.Context) {
 				err := ws.ReadJSON(&msg)
 				if err != nil {
 					p.lg.ErrorContext(p.ctx, "Failed to read message. Reconnecting...", "error", err)
-					go p.connect(p.ctx)
+					go p.connect(p.ctx, msgC)
 					return
 				}
 
-				p.msgC <- msg
+				// p.lg.Debug("Got msg", "msg", msg)
+				msgC <- msg
 			}
 		}
 	}()
@@ -162,11 +166,14 @@ func (p *TelegramPlugin) connect(ctx context.Context) {
 func (p *TelegramPlugin) startForwarder() {
 	p.lg.Info("Starting message forwarder", "url", p.config.GotifyURL, "chat_id", p.config.ChatID)
 
-	go p.connect(p.ctx)
+	msgC := make(chan GotifyMessage, 100)
+	go p.connect(p.ctx, msgC)
 
-	for msg := range p.msgC {
+	for msg := range msgC {
 		p.forwardMessage(p.ctx, &msg)
 	}
+
+	p.lg.Warn("Forwarder terminated")
 }
 
 func (p *TelegramPlugin) SetMessageHandler(h plugin.MessageHandler) {
