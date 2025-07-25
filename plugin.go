@@ -1,15 +1,17 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
-	"log"
-	"net/http"
-	"net/http/httputil"
-	"os"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"slices"
 	"time"
 
+	"github.com/caarlos0/env/v11"
+	botapi "github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 	"github.com/gorilla/websocket"
 	"github.com/gotify/plugin-api"
 )
@@ -25,158 +27,226 @@ func GetGotifyPluginInfo() plugin.Info {
 	}
 }
 
+type TelegramConfig struct {
+	GotifyURL   string `json:"gotify_url" env:"GOTIFY_HOST"`
+	ClientToken string `json:"client_token" env:"GOTIFY_CLIENT_TOKEN"`
+	ChatID      int    `json:"chat_id" env:"TELEGRAM_CHAT_ID"`
+	BotToken    string `json:"bot_token" env:"TELEGRAM_BOT_TOKEN"`
+	ParseMode   string `json:"parse_mode" env:"TELEGRAM_PARSE_MODE"`
+	WrapAsCode  bool   `json:"wrap_as_code"`
+}
+
 // Plugin is the plugin instance
 type TelegramPlugin struct {
-	ws                 *websocket.Conn
-	msgHandler         plugin.MessageHandler
-	debugLogger        *log.Logger
-	chatid             string
-	telegram_bot_token string
-	gotify_host        string
+	msgHandler plugin.MessageHandler
+	ctx        context.Context
+	cancel     context.CancelFunc
+	lg         *slog.Logger
+	config     *TelegramConfig
+	msgC       chan GotifyMessage
 }
 
 type GotifyMessage struct {
-	Id       uint32
-	Appid    uint32
-	Message  string
-	Title    string
-	Priority uint32
-	Date     string
+	ID       uint32 `json:"id"`
+	AppID    uint32 `json:"appid"`
+	Message  string `json:"message"`
+	Title    string `json:"title"`
+	Priority uint32 `json:"priority"`
+	Date     string `json:"date"`
 }
 
-type Payload struct {
-	ChatID string `json:"chat_id"`
-	Text   string `json:"text"`
-}
+func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage) {
+	// message length limited to 4k
+	const stepSize = 4090
 
-func (p *TelegramPlugin) send_msg_to_telegram(msg string) {
-	step_size := 4090
-	sending_message := ""
+	// TODO: templating?
+	tmsg := fmt.Sprintf("Date: %s\nTitle: %s\n\n%s", msg.Date, msg.Title, msg.Message)
+	msgLen := len(tmsg)
 
-	for i := 0; i < len(msg); i += step_size {
-		if i+step_size < len(msg) {
-			sending_message = msg[i : i+step_size]
-		} else {
-			sending_message = msg[i:len(msg)]
-		}
+	bot, err := botapi.New(p.config.ClientToken)
+	if err != nil {
+		p.lg.ErrorContext(ctx, "Failed to create telegram bot", "msg_id", msg.ID, "error", err)
+		return
+	}
+	defer bot.Close(ctx) // nolint:errcheck
 
-		data := Payload{
-			// Fill struct
-			ChatID: p.chatid,
-			Text:   sending_message,
-		}
-		payloadBytes, err := json.Marshal(data)
-		if err != nil {
-			p.debugLogger.Println("Create json false")
-			return
-		}
-		body := bytes.NewBuffer(payloadBytes)
-		// For future debugging
-		backup_body := bytes.NewBuffer(body.Bytes())
-
-		req, err := http.NewRequest("POST", "https://api.telegram.org/bot"+p.telegram_bot_token+"/sendMessage", body)
-		if err != nil {
-			p.debugLogger.Println("Create request false")
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-
-		if err != nil {
-			p.debugLogger.Printf("Send request false: %v\n", err)
-			return
-		}
-		p.debugLogger.Println("HTTP request was sent successfully")
-
-		if resp.StatusCode == http.StatusOK {
-			p.debugLogger.Println("The message was forwarded successfully to Telegram")
-		} else {
-			// Log infor for debugging
-			p.debugLogger.Println("============== Request ==============")
-			pretty_print, err := httputil.DumpRequest(req, true)
-			if err != nil {
-				p.debugLogger.Printf("%v\n", err)
+	for i := 0; i < msgLen; i += stepSize {
+		pmsg := func() string {
+			if i+stepSize < msgLen {
+				return tmsg[i : i+stepSize]
 			}
-			p.debugLogger.Printf(string(pretty_print))
-			p.debugLogger.Printf("%v\n", backup_body)
 
-			p.debugLogger.Println("============== Response ==============")
-			bodyBytes, err := io.ReadAll(resp.Body)
-			p.debugLogger.Printf("%v\n", string(bodyBytes))
+			return tmsg[i:msgLen]
+		}()
 
+		mp := &botapi.SendMessageParams{
+			ChatID:    p.config.ChatID,
+			Text:      pmsg,
+			ParseMode: models.ParseMode(p.config.ParseMode),
+		}
+		if p.config.WrapAsCode {
+			mp.Entities = []models.MessageEntity{
+				{Type: models.MessageEntityTypePre, Offset: 0, Length: len(pmsg)},
+			}
 		}
 
-		defer resp.Body.Close()
+		_, err = bot.SendMessage(ctx, mp)
+		if err != nil {
+			p.lg.ErrorContext(ctx, "Failed to send message", "msg_id", msg.ID, "error", err)
+			_ = p.msgHandler.SendMessage(plugin.Message{
+				Title:    "Error",
+				Message:  fmt.Sprintf("Failed to forward message, error: %v", err),
+				Priority: 9,
+			})
+		} else {
+			p.lg.DebugContext(ctx, "Message forwarded", "msg_id", msg.ID)
+		}
 	}
 }
 
-func (p *TelegramPlugin) connect_websocket() {
+func (p *TelegramPlugin) connect(ctx context.Context) {
+	var ws *websocket.Conn
+
 	for {
-		ws, _, err := websocket.DefaultDialer.Dial(p.gotify_host, nil)
+		u, err := url.Parse(p.config.GotifyURL)
+		if err != nil {
+			panic(err)
+		}
+
+		u = u.JoinPath("./stream")
+		q := u.Query()
+		q.Add("token", p.config.ClientToken)
+		u.RawQuery = q.Encode()
+
+		p.lg.InfoContext(ctx, "Dialing message stream", "url", u.String())
+
+		ws, _, err = websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
 		if err == nil {
-			p.ws = ws
 			break
 		}
-		p.debugLogger.Printf("Cannot connect to websocket: %v\n", err)
-		time.Sleep(5)
+
+		p.lg.ErrorContext(ctx, "Failed to connect to message stream. Retrying...", "error", err)
+		time.Sleep(5 * time.Second)
 	}
-	p.debugLogger.Println("WebSocket connected successfully, ready for forwarding")
+
+	p.lg.InfoContext(ctx, "Connected to message stream")
+
+	p.msgC = make(chan GotifyMessage, 100)
+
+	go func() {
+		for {
+			select {
+			case <-p.ctx.Done():
+				_ = ws.Close()
+				close(p.msgC)
+				return
+
+			default:
+				msg := GotifyMessage{}
+
+				err := ws.ReadJSON(&msg)
+				if err != nil {
+					p.lg.ErrorContext(p.ctx, "Failed to read message. Reconnecting...", "error", err)
+					go p.connect(p.ctx)
+					return
+				}
+
+				p.msgC <- msg
+			}
+		}
+	}()
 }
 
-func (p *TelegramPlugin) get_websocket_msg(url string, token string) {
-	p.gotify_host = url + "/stream?token=" + token
-	p.chatid = os.Getenv("TELEGRAM_CHAT_ID")
-	p.debugLogger.Printf("chatid: %v\n", p.chatid)
-	p.telegram_bot_token = os.Getenv("TELEGRAM_BOT_TOKEN")
-	p.debugLogger.Printf("Bot token: %v\n", p.telegram_bot_token)
+func (p *TelegramPlugin) startForwarder() {
+	p.lg.Info("Starting message forwarder", "url", p.config.GotifyURL, "chat_id", p.config.ChatID)
 
-	go p.connect_websocket()
+	go p.connect(p.ctx)
 
-	for {
-		msg := &GotifyMessage{}
-		if p.ws == nil {
-			time.Sleep(3)
-			continue
-		}
-		err := p.ws.ReadJSON(msg)
-		if err != nil {
-			p.debugLogger.Printf("Error while reading websocket: %v\n", err)
-			p.connect_websocket()
-			continue
-		}
-		p.send_msg_to_telegram(msg.Date + "\n" + msg.Title + "\n\n" + msg.Message)
+	for msg := range p.msgC {
+		p.forwardMessage(p.ctx, &msg)
 	}
 }
 
-// SetMessageHandler implements plugin.Messenger
-// Invoked during initialization
 func (p *TelegramPlugin) SetMessageHandler(h plugin.MessageHandler) {
-	p.debugLogger = log.New(os.Stdout, "Gotify 2 Telegram: ", log.Lshortfile)
 	p.msgHandler = h
 }
 
-func (p *TelegramPlugin) Enable() error {
-	go p.get_websocket_msg(os.Getenv("GOTIFY_HOST"), os.Getenv("GOTIFY_CLIENT_TOKEN"))
+func (p *TelegramPlugin) DefaultConfig() any {
+	return p.config
+}
+
+func (p *TelegramPlugin) ValidateAndSetConfig(c any) error {
+	cm, ok := c.(*TelegramConfig)
+	if !ok {
+		return fmt.Errorf("unexpected config type: %T", c)
+	}
+
+	var err error
+	if cm.GotifyURL == "" {
+		err = errors.Join(err, fmt.Errorf("Gotify URL must be set")) // nolint:staticcheck
+	}
+	if cm.ClientToken == "" {
+		err = errors.Join(err, fmt.Errorf("Gotify Client Token must be set")) // nolint:staticcheck
+	}
+
+	if cm.ChatID == 0 {
+		err = errors.Join(err, fmt.Errorf("ChatID must be set")) // nolint:staticcheck
+	}
+	if cm.BotToken == "" {
+		err = errors.Join(err, fmt.Errorf("Bot Token must be set")) // nolint:staticcheck
+	}
+	if !slices.Contains([]models.ParseMode{"", models.ParseModeHTML, models.ParseModeMarkdown, models.ParseModeMarkdownV1}, models.ParseMode(cm.ParseMode)) {
+		err = errors.Join(err, fmt.Errorf("Unknown parse mode: %s", cm.ParseMode)) // nolint:staticcheck
+	}
+
+	if err != nil {
+		return err
+	}
+
+	p.config = cm
 	return nil
 }
 
-// Disable implements plugin.Plugin
-func (p *TelegramPlugin) Disable() error {
-	if p.ws != nil {
-		p.ws.Close()
-	}
+func (p *TelegramPlugin) Enable() error {
+	cctx, cancel := context.WithCancel(context.Background())
+
+	p.ctx = cctx
+	p.cancel = cancel
+
+	go p.startForwarder()
+
 	return nil
+}
+
+func (p *TelegramPlugin) Disable() error {
+	if p.cancel != nil {
+		p.cancel()
+		p.cancel = nil
+	}
+
+	return nil
+}
+
+type pluginInterface interface {
+	plugin.Plugin
+	plugin.Messenger
+	plugin.Configurer
 }
 
 // NewGotifyPluginInstance creates a plugin instance for a user context.
 func NewGotifyPluginInstance(ctx plugin.UserContext) plugin.Plugin {
-	return &TelegramPlugin{}
-}
+	lg := slog.Default().With("plugin", "telegram", "plugin_id", ctx.ID)
 
-func main() {
-	panic("this should be built as go plugin")
-	// For testing
-	// p := &Plugin{nil, nil, "", "", ""}
-	// p.get_websocket_msg(os.Getenv("GOTIFY_HOST"), os.Getenv("GOTIFY_CLIENT_TOKEN"))
+	cfg, err := env.ParseAs[TelegramConfig]()
+	if err != nil {
+		panic(err)
+	}
+
+	// verify interface implementation
+	var p pluginInterface = &TelegramPlugin{
+		lg:     lg,
+		config: &cfg,
+	}
+
+	return p
 }
