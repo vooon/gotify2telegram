@@ -32,7 +32,7 @@ func GetGotifyPluginInfo() plugin.Info {
 type TelegramConfig struct {
 	GotifyURL   string `json:"gotify_url" env:"GOTIFY_HOST" yaml:"gotify_url"`
 	ClientToken string `json:"client_token" env:"GOTIFY_CLIENT_TOKEN" yaml:"client_token"`
-	ChatID      int    `json:"chat_id" env:"TELEGRAM_CHAT_ID" yaml:"chat_id"`
+	ChatID      int64  `json:"chat_id" env:"TELEGRAM_CHAT_ID" yaml:"chat_id"`
 	BotToken    string `json:"bot_token" env:"TELEGRAM_BOT_TOKEN" yaml:"bot_token"`
 	ParseMode   string `json:"parse_mode" env:"TELEGRAM_PARSE_MODE" yaml:"parse_mode"`
 	WrapAsCode  bool   `json:"wrap_as_code" yaml:"wrap_as_code"`
@@ -49,12 +49,12 @@ type TelegramPlugin struct {
 }
 
 type GotifyMessage struct {
-	ID       uint32 `json:"id"`
-	AppID    uint32 `json:"appid"`
-	Message  string `json:"message"`
-	Title    string `json:"title"`
-	Priority uint32 `json:"priority"`
-	Date     string `json:"date"`
+	ID       uint32    `json:"id"`
+	AppID    uint32    `json:"appid"`
+	Message  string    `json:"message"`
+	Title    string    `json:"title"`
+	Priority uint32    `json:"priority"`
+	Date     time.Time `json:"date"`
 }
 
 func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage) {
@@ -62,7 +62,7 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 	const stepSize = 4090
 
 	// TODO: templating?
-	tmsg := fmt.Sprintf("Date: %s\nTitle: %s\n\n%s", msg.Date, msg.Title, msg.Message)
+	tmsg := fmt.Sprintf("Date: %s\nTitle: %s\n\n%s", msg.Date.Format(time.RFC822), msg.Title, msg.Message)
 	msgLen := len(tmsg)
 
 	// p.lg.Debug("forwarding...", "msg", msg)
