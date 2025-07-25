@@ -30,12 +30,13 @@ func GetGotifyPluginInfo() plugin.Info {
 }
 
 type TelegramConfig struct {
-	GotifyURL   string `json:"gotify_url" env:"GOTIFY_HOST" yaml:"gotify_url"`
-	ClientToken string `json:"client_token" env:"GOTIFY_CLIENT_TOKEN" yaml:"client_token"`
-	ChatID      int64  `json:"chat_id" env:"TELEGRAM_CHAT_ID" yaml:"chat_id"`
-	BotToken    string `json:"bot_token" env:"TELEGRAM_BOT_TOKEN" yaml:"bot_token"`
-	ParseMode   string `json:"parse_mode" env:"TELEGRAM_PARSE_MODE" yaml:"parse_mode"`
-	WrapAsCode  bool   `json:"wrap_as_code" yaml:"wrap_as_code"`
+	GotifyURL                   string `json:"gotify_url" env:"GOTIFY_HOST" yaml:"gotify_url"`
+	ClientToken                 string `json:"client_token" env:"GOTIFY_CLIENT_TOKEN" yaml:"client_token"`
+	ChatID                      int64  `json:"chat_id" env:"TELEGRAM_CHAT_ID" yaml:"chat_id"`
+	BotToken                    string `json:"bot_token" env:"TELEGRAM_BOT_TOKEN" yaml:"bot_token"`
+	ParseMode                   string `json:"parse_mode" env:"TELEGRAM_PARSE_MODE" yaml:"parse_mode"`
+	WrapAsCode                  bool   `json:"wrap_as_code" yaml:"wrap_as_code"`
+	DisableNotificationPriority int    `json:"disable_notification_priority" yaml:"disable_notification_priority"`
 }
 
 // Plugin is the plugin instance
@@ -85,6 +86,9 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 			mp.Entities = []models.MessageEntity{
 				{Type: models.MessageEntityTypePre, Offset: 0, Length: len(pmsg)},
 			}
+		}
+		if int(msg.Priority) <= p.config.DisableNotificationPriority {
+			mp.DisableNotification = true
 		}
 
 		m, err := p.bot.SendMessage(ctx, mp)
