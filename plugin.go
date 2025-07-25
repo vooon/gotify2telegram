@@ -45,6 +45,7 @@ type TelegramPlugin struct {
 	cancel     context.CancelFunc
 	lg         *slog.Logger
 	config     *TelegramConfig
+	bot        *botapi.Bot
 }
 
 type GotifyMessage struct {
@@ -66,13 +67,6 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 
 	// p.lg.Debug("forwarding...", "msg", msg)
 
-	bot, err := botapi.New(p.config.ClientToken)
-	if err != nil {
-		p.lg.ErrorContext(ctx, "Failed to create telegram bot", "msg_id", msg.ID, "error", err)
-		return
-	}
-	defer bot.Close(ctx) // nolint:errcheck
-
 	for i := 0; i < msgLen; i += stepSize {
 		pmsg := func() string {
 			if i+stepSize < msgLen {
@@ -93,14 +87,9 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 			}
 		}
 
-		_, err = bot.SendMessage(ctx, mp)
+		_, err := p.bot.SendMessage(ctx, mp)
 		if err != nil {
 			p.lg.ErrorContext(ctx, "Failed to send message", "msg_id", msg.ID, "error", err)
-			_ = p.msgHandler.SendMessage(plugin.Message{
-				Title:    "Error",
-				Message:  fmt.Sprintf("Failed to forward message, error: %v", err),
-				Priority: 9,
-			})
 		} else {
 			p.lg.InfoContext(ctx, "Message forwarded", "msg_id", msg.ID)
 		}
@@ -216,24 +205,33 @@ func (p *TelegramPlugin) ValidateAndSetConfig(c any) error {
 	return nil
 }
 
-func (p *TelegramPlugin) Enable() error {
+func (p *TelegramPlugin) Enable() (err error) {
 	cctx, cancel := context.WithCancel(context.Background())
 
 	p.ctx = cctx
 	p.cancel = cancel
+
+	p.bot, err = botapi.New(p.config.BotToken)
+	if err != nil {
+		p.lg.Error("Failed to create telegram bot", "error", err)
+		return
+	}
 
 	go p.startForwarder()
 
 	return nil
 }
 
-func (p *TelegramPlugin) Disable() error {
+func (p *TelegramPlugin) Disable() (err error) {
 	if p.cancel != nil {
 		p.cancel()
 		p.cancel = nil
 	}
+	if p.bot != nil {
+		_, err = p.bot.Close(context.Background())
+	}
 
-	return nil
+	return
 }
 
 type pluginInterface interface {
@@ -246,7 +244,7 @@ type pluginInterface interface {
 func NewGotifyPluginInstance(ctx plugin.UserContext) plugin.Plugin {
 
 	lg := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	lg = lg.With("plugin", "telegram", "plugin_id", ctx.ID)
+	lg = lg.With("plugin", "telegram", "user_id", ctx.ID, "user_name", ctx.Name)
 
 	cfg, err := env.ParseAs[TelegramConfig]()
 	if err != nil {
