@@ -87,11 +87,11 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 			}
 		}
 
-		_, err := p.bot.SendMessage(ctx, mp)
+		m, err := p.bot.SendMessage(ctx, mp)
 		if err != nil {
 			p.lg.ErrorContext(ctx, "Failed to send message", "msg_id", msg.ID, "error", err)
 		} else {
-			p.lg.InfoContext(ctx, "Message forwarded", "msg_id", msg.ID)
+			p.lg.InfoContext(ctx, "Message forwarded", "msg_id", msg.ID, "tmsg_id", m.ID)
 		}
 	}
 }
@@ -198,6 +198,7 @@ func (p *TelegramPlugin) ValidateAndSetConfig(c any) error {
 	}
 
 	if err != nil {
+		p.lg.Warn("Config validation failed", "new_cfg", cm, "error", err)
 		return err
 	}
 
