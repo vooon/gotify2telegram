@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"slices"
 	"time"
 
@@ -100,7 +101,7 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 				Priority: 9,
 			})
 		} else {
-			p.lg.DebugContext(ctx, "Message forwarded", "msg_id", msg.ID)
+			p.lg.InfoContext(ctx, "Message forwarded", "msg_id", msg.ID)
 		}
 	}
 }
@@ -236,7 +237,9 @@ type pluginInterface interface {
 
 // NewGotifyPluginInstance creates a plugin instance for a user context.
 func NewGotifyPluginInstance(ctx plugin.UserContext) plugin.Plugin {
-	lg := slog.Default().With("plugin", "telegram", "plugin_id", ctx.ID)
+
+	lg := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	lg = lg.With("plugin", "telegram", "plugin_id", ctx.ID)
 
 	cfg, err := env.ParseAs[TelegramConfig]()
 	if err != nil {
