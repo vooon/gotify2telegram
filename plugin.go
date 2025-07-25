@@ -30,12 +30,12 @@ func GetGotifyPluginInfo() plugin.Info {
 }
 
 type TelegramConfig struct {
-	GotifyURL   string `json:"gotify_url" env:"GOTIFY_HOST"`
-	ClientToken string `json:"client_token" env:"GOTIFY_CLIENT_TOKEN"`
-	ChatID      int    `json:"chat_id" env:"TELEGRAM_CHAT_ID"`
-	BotToken    string `json:"bot_token" env:"TELEGRAM_BOT_TOKEN"`
-	ParseMode   string `json:"parse_mode" env:"TELEGRAM_PARSE_MODE"`
-	WrapAsCode  bool   `json:"wrap_as_code"`
+	GotifyURL   string `json:"gotify_url" env:"GOTIFY_HOST" yaml:"gotify_url"`
+	ClientToken string `json:"client_token" env:"GOTIFY_CLIENT_TOKEN" yaml:"client_token"`
+	ChatID      int    `json:"chat_id" env:"TELEGRAM_CHAT_ID" yaml:"chat_id"`
+	BotToken    string `json:"bot_token" env:"TELEGRAM_BOT_TOKEN" yaml:"bot_token"`
+	ParseMode   string `json:"parse_mode" env:"TELEGRAM_PARSE_MODE" yaml:"parse_mode"`
+	WrapAsCode  bool   `json:"wrap_as_code" yaml:"wrap_as_code"`
 }
 
 // Plugin is the plugin instance
