@@ -101,12 +101,17 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 }
 
 func (p *TelegramPlugin) connect(ctx context.Context, msgC chan<- GotifyMessage) {
-	var ws *websocket.Conn
+	defer close(msgC)
 
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+
 		u, err := url.Parse(p.config.GotifyURL)
 		if err != nil {
-			panic(err)
+			p.lg.ErrorContext(ctx, "Invalid Gotify URL", "url", p.config.GotifyURL, "error", err)
+			return
 		}
 
 		u = u.JoinPath("./stream")
@@ -117,43 +122,64 @@ func (p *TelegramPlugin) connect(ctx context.Context, msgC chan<- GotifyMessage)
 		p.lg.InfoContext(ctx, "Dialing message stream", "url", u.String())
 
 		ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
+		ws, _, err := websocket.DefaultDialer.DialContext(ctx2, u.String(), nil)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 
-		ws, _, err = websocket.DefaultDialer.DialContext(ctx2, u.String(), nil)
-		if err == nil {
-			break
+			p.lg.ErrorContext(ctx, "Failed to connect to message stream. Retrying...", "error", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+			continue
 		}
 
-		p.lg.ErrorContext(ctx, "Failed to connect to message stream. Retrying...", "error", err)
-		time.Sleep(5 * time.Second)
-	}
+		p.lg.InfoContext(ctx, "Connected to message stream")
 
-	p.lg.InfoContext(ctx, "Connected to message stream")
-
-	go func() {
-		for {
+		connClosed := make(chan struct{})
+		go func() {
 			select {
-			case <-p.ctx.Done():
-				p.lg.WarnContext(p.ctx, "Terminating message reader")
+			case <-ctx.Done():
 				_ = ws.Close()
-				close(msgC)
-				return
+			case <-connClosed:
+			}
+		}()
 
-			default:
-				msg := GotifyMessage{}
+		for {
+			msg := GotifyMessage{}
 
-				err := ws.ReadJSON(&msg)
-				if err != nil {
-					p.lg.ErrorContext(p.ctx, "Failed to read message. Reconnecting...", "error", err)
-					go p.connect(p.ctx, msgC)
+			err := ws.ReadJSON(&msg)
+			if err != nil {
+				close(connClosed)
+				_ = ws.Close()
+				if ctx.Err() != nil {
+					p.lg.WarnContext(ctx, "Terminating message reader")
 					return
 				}
+				p.lg.ErrorContext(ctx, "Failed to read message. Reconnecting...", "error", err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+				break
+			}
 
-				// p.lg.Debug("Got msg", "msg", msg)
-				msgC <- msg
+			select {
+			case <-ctx.Done():
+				close(connClosed)
+				_ = ws.Close()
+				p.lg.WarnContext(ctx, "Terminating message reader")
+				return
+			// p.lg.Debug("Got msg", "msg", msg)
+			case msgC <- msg:
 			}
 		}
-	}()
+	}
 }
 
 func (p *TelegramPlugin) startForwarder() {
