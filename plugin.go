@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf16"
 
 	"github.com/caarlos0/env/v11"
 	botapi "github.com/go-telegram/bot"
@@ -60,6 +62,95 @@ type GotifyMessage struct {
 	Extras   map[string]any `json:"extras"`
 }
 
+func splitMessage(text string, limit int) []string {
+	if limit <= 0 || text == "" {
+		return nil
+	}
+
+	runes := []rune(text)
+	parts := make([]string, 0, len(runes)/limit+1)
+
+	for start := 0; start < len(runes); {
+		end := start + limit
+		if end >= len(runes) {
+			parts = append(parts, string(runes[start:]))
+			break
+		}
+
+		split := end
+		for i := end - 1; i > start; i-- {
+			if runes[i] == '\n' {
+				split = i + 1
+				break
+			}
+		}
+		if split == end {
+			for i := end - 1; i > start; i-- {
+				if unicode.IsSpace(runes[i]) {
+					split = i + 1
+					break
+				}
+			}
+		}
+		if split <= start {
+			split = end
+		}
+
+		parts = append(parts, string(runes[start:split]))
+		start = split
+	}
+
+	return parts
+}
+
+func splitMarkdownMessage(text string, limit int) []string {
+	const fence = "```"
+	const fencePadding = len("```\n\n```")
+
+	if limit <= fencePadding {
+		return splitMessage(text, limit)
+	}
+
+	// Keep room for temporary fence close/open when chunk boundaries fall inside a fenced block.
+	rawParts := splitMessage(text, limit-fencePadding)
+	parts := make([]string, 0, len(rawParts))
+	inFence := false
+
+	for _, raw := range rawParts {
+		if raw == "" {
+			continue
+		}
+
+		part := raw
+		if inFence {
+			part = fence + "\n" + part
+		}
+
+		nextInFence := inFence != (strings.Count(raw, fence)%2 == 1)
+		if nextInFence {
+			part += "\n" + fence
+		}
+
+		parts = append(parts, part)
+		inFence = nextInFence
+	}
+
+	return parts
+}
+
+func splitForParseMode(text string, limit int, parseMode models.ParseMode) []string {
+	switch parseMode {
+	case models.ParseModeMarkdown, models.ParseModeMarkdownV1:
+		return splitMarkdownMessage(text, limit)
+	default:
+		return splitMessage(text, limit)
+	}
+}
+
+func telegramEntityTextLength(text string) int {
+	return len(utf16.Encode([]rune(text)))
+}
+
 func parseModeFromContentType(contentType string) models.ParseMode {
 	ct := strings.ToLower(strings.TrimSpace(contentType))
 	if ct == "" {
@@ -104,24 +195,18 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 	// message length limited to 4k
 	const stepSize = 4090
 
+	parseMode := models.ParseMode(p.config.ParseMode)
+	if parseMode == "" {
+		parseMode = parseModeFromExtras(msg)
+	}
+
 	// TODO: templating?
 	tmsg := fmt.Sprintf("Date: %s\nTitle: %s\n\n%s", msg.Date.Format(time.RFC822), msg.Title, msg.Message)
-	msgLen := len(tmsg)
+	parts := splitForParseMode(tmsg, stepSize, parseMode)
 
-	// p.lg.Debug("forwarding...", "msg", msg)
-
-	for i := 0; i < msgLen; i += stepSize {
-		pmsg := func() string {
-			if i+stepSize < msgLen {
-				return tmsg[i : i+stepSize]
-			}
-
-			return tmsg[i:msgLen]
-		}()
-
-		parseMode := models.ParseMode(p.config.ParseMode)
-		if parseMode == "" {
-			parseMode = parseModeFromExtras(msg)
+	for _, pmsg := range parts {
+		if pmsg == "" {
+			continue
 		}
 
 		mp := &botapi.SendMessageParams{
@@ -131,7 +216,7 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 		}
 		if p.config.WrapAsCode {
 			mp.Entities = []models.MessageEntity{
-				{Type: models.MessageEntityTypePre, Offset: 0, Length: len(pmsg)},
+				{Type: models.MessageEntityTypePre, Offset: 0, Length: telegramEntityTextLength(pmsg)},
 			}
 		}
 		if int(msg.Priority) <= p.config.DisableNotificationPriority {
