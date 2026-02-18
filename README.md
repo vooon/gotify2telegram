@@ -18,7 +18,7 @@ This Gotify plugin forwards all received messages to Telegram through the Telegr
 
 * **Build from source**
 
-    1. Change GOTIFY_VERSION in Makefile.
+    1. `Makefile` defaults to `GOTIFY_VERSION=v2.9.0`. Change it only if you need another server version.
 
     2. Build the binary.
 
@@ -45,4 +45,3 @@ GOTIFY_CLIENT_TOKEN=YOUR_CLIENT_TOKEN (create a new Client in Gotify and use the
 TELEGRAM_CHAT_ID=YOUR_TELEGRAM_CHAT_ID (conversation ID from the Telegram API call above)
 TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN (API token provided by BotFather)
 ```
-
