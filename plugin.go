@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -50,12 +51,53 @@ type TelegramPlugin struct {
 }
 
 type GotifyMessage struct {
-	ID       uint32    `json:"id"`
-	AppID    uint32    `json:"appid"`
-	Message  string    `json:"message"`
-	Title    string    `json:"title"`
-	Priority uint32    `json:"priority"`
-	Date     time.Time `json:"date"`
+	ID       uint32         `json:"id"`
+	AppID    uint32         `json:"appid"`
+	Message  string         `json:"message"`
+	Title    string         `json:"title"`
+	Priority uint32         `json:"priority"`
+	Date     time.Time      `json:"date"`
+	Extras   map[string]any `json:"extras"`
+}
+
+func parseModeFromContentType(contentType string) models.ParseMode {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	if ct == "" {
+		return ""
+	}
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+
+	switch ct {
+	case "text/html":
+		return models.ParseModeHTML
+	case "text/markdown", "text/x-markdown":
+		return models.ParseModeMarkdown
+	default:
+		return ""
+	}
+}
+
+func parseModeFromExtras(msg *GotifyMessage) models.ParseMode {
+	if msg == nil || msg.Extras == nil {
+		return ""
+	}
+
+	displayRaw, ok := msg.Extras["client::display"]
+	if !ok {
+		return ""
+	}
+	display, ok := displayRaw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	contentType, ok := display["contentType"].(string)
+	if !ok {
+		return ""
+	}
+
+	return parseModeFromContentType(contentType)
 }
 
 func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage) {
@@ -77,10 +119,15 @@ func (p *TelegramPlugin) forwardMessage(ctx context.Context, msg *GotifyMessage)
 			return tmsg[i:msgLen]
 		}()
 
+		parseMode := models.ParseMode(p.config.ParseMode)
+		if parseMode == "" {
+			parseMode = parseModeFromExtras(msg)
+		}
+
 		mp := &botapi.SendMessageParams{
 			ChatID:    p.config.ChatID,
 			Text:      pmsg,
-			ParseMode: models.ParseMode(p.config.ParseMode),
+			ParseMode: parseMode,
 		}
 		if p.config.WrapAsCode {
 			mp.Entities = []models.MessageEntity{

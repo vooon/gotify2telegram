@@ -12,7 +12,7 @@ This Gotify plugin forwards all received messages to Telegram through the Telegr
 
     2. Put it into Gotify plugin folder.
 
-    3. Set secrets via environment variables (List of mandatory secrets is in [Appendix](#appendix)).
+    3. Open the plugin settings in the Gotify UI and configure the plugin fields.
 
     4. Restart gotify.
 
@@ -36,8 +36,22 @@ This Gotify plugin forwards all received messages to Telegram through the Telegr
     - In the BotFather chat, list your created bots and select the respective bot for which you want to change the Group Privacy setting.
     - Turn off the Group Privacy setting.
 
+## Configuration
+This plugin can be configured from the Gotify UI (recommended).
+
+Required fields in UI:
+- `gotify_url`
+- `client_token`
+- `chat_id`
+- `bot_token`
+
+Optional fields in UI:
+- `parse_mode`
+- `wrap_as_code`
+- `disable_notification_priority`
+
 ## Appendix
-Mandatory secrets.
+Environment variables are supported as defaults (or for fully env-driven deployments).
 
 ```(shell)
 GOTIFY_HOST=ws://YOUR_GOTIFY_IP (depending on your setup, "ws://localhost:80" will likely work by default)
