@@ -36,4 +36,10 @@ build-linux-arm64: get-gotify-server-go-version update-go-mod
 
 build: build-linux-arm-7 build-linux-amd64 build-linux-arm64
 
-.PHONY: build
+lint:
+	golangci-lint run ./...
+
+build-plugin: create-build-dir
+	go build -mod=readonly -buildmode=plugin -o ${BUILDDIR}/${PLUGIN_NAME}.so ${PLUGIN_ENTRY}
+
+.PHONY: download-tools create-build-dir update-go-mod get-gotify-server-go-version build-linux-amd64 build-linux-arm-7 build-linux-arm64 build lint build-plugin
