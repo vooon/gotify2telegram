@@ -18,7 +18,7 @@ This Gotify plugin forwards all received messages to Telegram through the Telegr
 
 * **Build from source**
 
-    1. `Makefile` defaults to `GOTIFY_VERSION=v2.9.0`. Change it only if you need another server version.
+    1. `Makefile` defaults to `GOTIFY_VERSION=v2.9.1`. Change it only if you need another server version.
 
     2. Build the binary.
 
